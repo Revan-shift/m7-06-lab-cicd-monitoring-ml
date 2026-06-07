@@ -1,0 +1,149 @@
+groups:
+  - name: vision-moderation.slo
+    rules:
+      # -----------------------------------------------------------------------
+      # Availability — multi-window burn-rate (fast burn)
+      # 2% of monthly error budget consumed in 1 hour → page
+      # Monthly error budget = (1 - 0.995) = 0.5%
+      # Fast burn multiplier: 14.4× means 1h burn rate that exhausts budget in ~3 days
+      # -----------------------------------------------------------------------
+      - alert: AvailabilityBurnFast
+        expr: |
+          (
+            sum(rate(http_requests_total{job="vision-moderation",code=~"5.."}[1h]))
+            /
+            sum(rate(http_requests_total{job="vision-moderation"}[1h]))
+          ) > (14.4 * (1 - 0.995))
+          and
+          (
+            sum(rate(http_requests_total{job="vision-moderation",code=~"5.."}[5m]))
+            /
+            sum(rate(http_requests_total{job="vision-moderation"}[5m]))
+          ) > (14.4 * (1 - 0.995))
+        for: 2m
+        labels:
+          severity: page
+          team: ml-platform
+          service: vision-moderation
+        annotations:
+          summary: "Fast availability burn: >2% of monthly error budget in 1h"
+          description: >
+            Error rate is {{ $value | humanizePercentage }} over the past hour,
+            burning through the monthly error budget at 14.4× the sustainable rate.
+            Immediate action required.
+          runbook: "https://runbooks.example.com/vision-moderation/availability-burn"
+          dashboard: "https://grafana.example.com/d/vision-mod-slo"
+
+      # -----------------------------------------------------------------------
+      # Availability — multi-window burn-rate (slow burn)
+      # 10% of monthly error budget consumed in 24 hours → ticket
+      # Slow burn multiplier: 6× over a 6h window
+      # -----------------------------------------------------------------------
+      - alert: AvailabilityBurnSlow
+        expr: |
+          (
+            sum(rate(http_requests_total{job="vision-moderation",code=~"5.."}[6h]))
+            /
+            sum(rate(http_requests_total{job="vision-moderation"}[6h]))
+          ) > (6 * (1 - 0.995))
+          and
+          (
+            sum(rate(http_requests_total{job="vision-moderation",code=~"5.."}[30m]))
+            /
+            sum(rate(http_requests_total{job="vision-moderation"}[30m]))
+          ) > (6 * (1 - 0.995))
+        for: 15m
+        labels:
+          severity: ticket
+          team: ml-platform
+          service: vision-moderation
+        annotations:
+          summary: "Slow availability burn: >10% of monthly error budget in 24h"
+          description: >
+            Error rate is {{ $value | humanizePercentage }} over the past 6 hours,
+            on track to consume 10% of the monthly error budget within 24 hours.
+          runbook: "https://runbooks.example.com/vision-moderation/availability-burn"
+          dashboard: "https://grafana.example.com/d/vision-mod-slo"
+
+  - name: vision-moderation.latency
+    rules:
+      # -----------------------------------------------------------------------
+      # p99 latency > 1 second sustained 5 minutes → page
+      # Uses histogram_quantile over a 5-minute rolling window
+      # -----------------------------------------------------------------------
+      - alert: LatencyP99High
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le) (
+              rate(http_request_duration_seconds_bucket{job="vision-moderation"}[5m])
+            )
+          ) > 1.0
+        for: 5m
+        labels:
+          severity: page
+          team: ml-platform
+          service: vision-moderation
+        annotations:
+          summary: "p99 latency exceeds 1s SLO threshold"
+          description: >
+            p99 request latency is {{ $value | humanizeDuration }} — above the 1s SLO.
+            Check for model inference bottlenecks, resource saturation, or upstream timeouts.
+          runbook: "https://runbooks.example.com/vision-moderation/latency-p99"
+          dashboard: "https://grafana.example.com/d/vision-mod-latency"
+
+  - name: vision-moderation.drift
+    rules:
+      # -----------------------------------------------------------------------
+      # Input feature drift (PSI) > 0.2 for any major feature, sustained 1 hour → ticket
+      # Assumes a gauge metric: feature_drift_psi{job, feature}
+      # -----------------------------------------------------------------------
+      - alert: DriftDetected
+        expr: |
+          max by (feature) (
+            avg_over_time(
+              feature_drift_psi{job="vision-moderation"}[1h]
+            )
+          ) > 0.2
+        for: 1h
+        labels:
+          severity: ticket
+          team: ml-platform
+          service: vision-moderation
+        annotations:
+          summary: "Input feature drift PSI > 0.2 sustained for 1h — feature: {{ $labels.feature }}"
+          description: >
+            Feature '{{ $labels.feature }}' has a Population Stability Index of
+            {{ $value | printf "%.3f" }}, above the 0.2 threshold for over 1 hour.
+            Distribution shift may degrade model accuracy. Investigate data pipeline
+            or upstream source changes.
+          runbook: "https://runbooks.example.com/vision-moderation/drift-detected"
+          dashboard: "https://grafana.example.com/d/vision-mod-drift"
+
+  - name: vision-moderation.model-version
+    rules:
+      # -----------------------------------------------------------------------
+      # Model version mismatch: at least one replica serving unexpected model version
+      # for 5 minutes → page
+      # Assumes a gauge: model_version_mismatch{job, replica, expected, actual}
+      # set to 1 when mismatch is detected (e.g. by the sidecar version-checker)
+      # -----------------------------------------------------------------------
+      - alert: ModelVersionMismatch
+        expr: |
+          sum(
+            model_version_mismatch{job="vision-moderation"}
+          ) > 0
+        for: 5m
+        labels:
+          severity: page
+          team: ml-platform
+          service: vision-moderation
+        annotations:
+          summary: "Model version mismatch detected — replica serving wrong model version"
+          description: >
+            {{ $value }} replica(s) are serving a model version that does not match
+            the version registered in the model registry. This can cause inconsistent
+            predictions or silent regressions. Verify the deployment rollout completed
+            cleanly and no stale pods are running.
+          runbook: "https://runbooks.example.com/vision-moderation/model-version-mismatch"
+          dashboard: "https://grafana.example.com/d/vision-mod-versions"
